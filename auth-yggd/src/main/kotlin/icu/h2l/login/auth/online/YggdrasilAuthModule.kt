@@ -98,6 +98,16 @@ class YggdrasilAuthModule(
      */
         private val inFlightAuthJobs = ConcurrentHashMap<Player, Job>()
 
+    // ── MUA state ──────────────────────────────────────────────────────────────
+    // Mirrors the Yggdrasil state above, but is scoped exclusively to the "mua"
+    // entry for offline-UUID players.  Kept separate to prevent any cross-contamination
+    // between the two auth paths.
+
+    private val muaAuthResults = ConcurrentHashMap<Player, YggdrasilAuthResult>()
+    private val muaWaitingAreaPlayers = ConcurrentHashMap<Player, HyperZonePlayer>()
+    private val muaInFlightAuthJobs = ConcurrentHashMap<Player, Job>()
+    private val muaAuthLaunchLock = Any()
+
     private val authLaunchLock = Any()
 
     /**
@@ -424,6 +434,231 @@ class YggdrasilAuthModule(
     fun clearPlayerCacheOnDisconnect(player: Player) {
         clearTransientState(player)
         debug(HyperZoneDebugType.YGGDRASIL_AUTH) { "[YggdrasilFlow] 玩家断连，已清理缓存状态: user=${player.username}" }
+    }
+
+    // ── MUA public API ─────────────────────────────────────────────────────────
+
+    /**
+     * 启动异步 MUA 验证（不阻塞）。
+     *
+     * 仅当 EntryConfigManager 中存在 ID 为 "mua" 的入口配置时才执行；若未配置则静默返回，
+     * 让玩家正常落入离线认证流程。
+     */
+    fun startMuaAuth(
+        player: Player,
+        username: String,
+        uuid: UUID,
+        serverId: String,
+        playerIp: String? = null
+    ) {
+        val muaEntry = entryConfigManager.getConfigById(MuaHyperZoneCredential.CHANNEL_ID)
+        if (muaEntry == null) {
+            debug(HyperZoneDebugType.YGGDRASIL_AUTH) { "[MuaFlow] 未配置 mua 入口，跳过 MUA 验证: user=$username" }
+            return
+        }
+
+        debug(HyperZoneDebugType.YGGDRASIL_AUTH) { "[MuaFlow] 请求启动 MUA 验证: user=$username" }
+        synchronized(muaAuthLaunchLock) {
+            if (muaAuthResults.containsKey(player)) {
+                debug(HyperZoneDebugType.YGGDRASIL_AUTH) { "[MuaFlow] 玩家 $username 已有 MUA 验证结果，跳过重复请求" }
+                return
+            }
+
+            val runningJob = muaInFlightAuthJobs[player]
+            if (runningJob?.isActive == true) {
+                debug(HyperZoneDebugType.YGGDRASIL_AUTH) { "[MuaFlow] 玩家 $username MUA 验证任务进行中，跳过重复请求" }
+                return
+            }
+
+            runCatching {
+                playerAccessor.getByPlayer(player)
+            }.getOrNull()?.let { hyperZonePlayer ->
+                hyperZonePlayer.sendMessage(MuaMessages.authInProgress(hyperZonePlayer))
+            }
+
+            val job = coroutineScope.launch {
+                try {
+                    debug(HyperZoneDebugType.YGGDRASIL_AUTH) { "[MuaFlow] 验证任务开始执行: user=$username" }
+                    val requests = buildAuthRequests(listOf(muaEntry))
+                    val result = if (requests.isEmpty()) {
+                        YggdrasilAuthResult.NoEntriesConfigured
+                    } else {
+                        executeAuthRequests(username, serverId, playerIp, requests, "MUA")
+                    }
+                    muaAuthResults[player] = result
+                    debug(HyperZoneDebugType.YGGDRASIL_AUTH) { "[MuaFlow] 验证任务完成: user=$username, result=${result.javaClass.simpleName}" }
+                    muaWaitingAreaPlayers[player]?.let { handler ->
+                        dispatchMuaAuthResult(player, username, handler, result)
+                    } ?: run {
+                        debug(HyperZoneDebugType.YGGDRASIL_AUTH) { "[MuaFlow] 尚未注册等待区上下文，等待后续 WaitingAreaJoin: user=$username" }
+                    }
+                } finally {
+                    muaInFlightAuthJobs.remove(player)
+                }
+            }
+
+            muaInFlightAuthJobs[player] = job
+        }
+    }
+
+    /**
+     * 注册玩家当前等待区上下文（MUA 路径）。
+     * 若 MUA 验证已完成，则立即回调 [dispatchMuaAuthResult]。
+     */
+    fun registerMuaWaitingAreaPlayer(player: Player, waitingAreaPlayer: HyperZonePlayer) {
+        muaWaitingAreaPlayers[player] = waitingAreaPlayer
+        debug(HyperZoneDebugType.YGGDRASIL_AUTH) { "[MuaFlow] 为玩家 ${player.username} 注册 MUA 等待区上下文" }
+
+        muaAuthResults[player]?.let { result ->
+            debug(HyperZoneDebugType.YGGDRASIL_AUTH) { "[MuaFlow] 命中已完成结果，立即回调: user=${player.username}" }
+            val displayName = (result as? YggdrasilAuthResult.Success)?.profile?.name ?: player.username
+            dispatchMuaAuthResult(player, displayName, waitingAreaPlayer, result)
+        } ?: run {
+            debug(HyperZoneDebugType.YGGDRASIL_AUTH) { "[MuaFlow] MUA 验证结果尚未完成，等待异步回调: user=${player.username}" }
+        }
+    }
+
+    fun clearMuaPlayerCacheOnDisconnect(player: Player) {
+        clearMuaTransientState(player)
+        debug(HyperZoneDebugType.YGGDRASIL_AUTH) { "[MuaFlow] 玩家断连，已清理 MUA 缓存状态: user=${player.username}" }
+    }
+
+    // ── MUA private helpers ────────────────────────────────────────────────────
+
+    private fun dispatchMuaAuthResult(
+        player: Player,
+        username: String,
+        handler: HyperZonePlayer,
+        result: YggdrasilAuthResult
+    ) {
+        try {
+            if (result is YggdrasilAuthResult.Success) {
+                val profileResolveError = ensureMuaCredential(handler, result)
+                if (profileResolveError != null) {
+                    handler.sendMessage(MuaMessages.profileResolveFailed(handler, profileResolveError))
+                    info { "玩家 $username MUA 验证成功，但 Profile 解析失败：$profileResolveError" }
+                    return
+                }
+
+                info { "玩家 $username 通过 MUA 验证" }
+                handler.sendMessage(MuaMessages.authSucceeded(handler))
+                if (handler.isInWaitingArea()) {
+                    runCatching {
+                        handler.overVerify()
+                    }.onFailure { throwable ->
+                        val message = throwable.message ?: "MUA 认证成功，但 Profile 绑定失败"
+                        handler.sendMessage(MuaMessages.verifyCompleteFailed(handler, message))
+                        info { "玩家 $username MUA 验证成功，但完成验证失败：$message" }
+                    }
+                }
+                return
+            }
+
+            // Failure: log only, let offline auth take over — no player-facing error message.
+            val failureReason = when (result) {
+                is YggdrasilAuthResult.Failed -> result.reason
+                is YggdrasilAuthResult.Timeout -> "Timeout"
+                is YggdrasilAuthResult.NoEntriesConfigured -> "No mua entry configured"
+                is YggdrasilAuthResult.Success -> return
+            }
+            info { "玩家 $username MUA 验证失败（将回退至离线认证）: $failureReason" }
+            debug(HyperZoneDebugType.YGGDRASIL_AUTH) { "[MuaFlow] MUA 验证失败原因: $failureReason" }
+        } finally {
+            clearMuaTransientState(player)
+        }
+    }
+
+    /**
+     * 确保 MUA 凭证已提交，类比 Yggdrasil 的 [ensureCredentialForSuccessfulAuth]。
+     *
+     * @return 错误原因字符串；若凭证已就绪则返回 null。
+     */
+    private fun ensureMuaCredential(
+        handler: HyperZonePlayer,
+        result: YggdrasilAuthResult.Success
+    ): String? {
+        if (profileService.getAttachedProfile(handler) != null) {
+            return null
+        }
+
+        val existingBoundProfileId = entryDatabaseHelper.findEntryByUuid(
+            MuaHyperZoneCredential.CHANNEL_ID, result.profile.id
+        )
+        if (existingBoundProfileId != null) {
+            entryDatabaseHelper.updateEntryName(
+                MuaHyperZoneCredential.CHANNEL_ID, result.profile.id, result.profile.name
+            )
+            handler.submitCredential(
+                muaCredential(
+                    authenticatedName = result.profile.name,
+                    authenticatedUuid = result.profile.id,
+                    suggestedProfileCreateUuid = result.profile.id,
+                    knownProfileId = existingBoundProfileId
+                )
+            )
+            return null
+        }
+
+        val probeCredential = muaCredential(
+            authenticatedName = result.profile.name,
+            authenticatedUuid = result.profile.id,
+            suggestedProfileCreateUuid = result.profile.id
+        )
+
+        val channelAbility = CredentialChannelRegistryProvider.getOrNull()
+            ?.getChannelAbility(MuaHyperZoneCredential.CHANNEL_ID)
+        if (channelAbility?.canRegister == false) {
+            handler.submitCredential(probeCredential)
+            return MuaMessages.registrationDisabledReason(handler)
+        }
+
+        if (profileService.canCreate(probeCredential)) {
+            val createdProfile = try {
+                profileService.create(probeCredential)
+            } catch (throwable: IllegalStateException) {
+                return throwable.message ?: "创建 Profile 失败"
+            }
+
+            entryDatabaseHelper.createEntry(
+                entryId = MuaHyperZoneCredential.CHANNEL_ID,
+                name = result.profile.name,
+                uuid = result.profile.id,
+                pid = createdProfile.id
+            )
+            handler.submitCredential(
+                muaCredential(
+                    authenticatedName = result.profile.name,
+                    authenticatedUuid = result.profile.id,
+                    suggestedProfileCreateUuid = result.profile.id,
+                    knownProfileId = createdProfile.id
+                )
+            )
+            return null
+        }
+
+        handler.submitCredential(probeCredential)
+        return null
+    }
+
+    private fun muaCredential(
+        authenticatedName: String,
+        authenticatedUuid: UUID,
+        suggestedProfileCreateUuid: UUID?,
+        knownProfileId: UUID? = null
+    ): MuaHyperZoneCredential {
+        return MuaHyperZoneCredential(
+            entryDatabaseHelper = entryDatabaseHelper,
+            authenticatedName = authenticatedName,
+            authenticatedUUID = authenticatedUuid,
+            suggestedProfileCreateUuid = suggestedProfileCreateUuid,
+            knownProfileId = knownProfileId
+        )
+    }
+
+    private fun clearMuaTransientState(player: Player) {
+        muaAuthResults.remove(player)
+        muaWaitingAreaPlayers.remove(player)
+        muaInFlightAuthJobs.remove(player)?.cancel()
     }
 
     /**（内部方法，由startYggdrasilAuth调用）

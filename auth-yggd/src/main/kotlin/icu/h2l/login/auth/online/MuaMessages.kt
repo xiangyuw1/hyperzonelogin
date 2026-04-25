@@ -1,0 +1,84 @@
+/*
+ * This file is part of HyperZoneLogin, licensed under the GNU Affero General Public License v3.0 or later.
+ *
+ * Copyright (C) ksqeib (庆灵) <ksqeib@qq.com>
+ * Copyright (C) contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *
+ */
+
+package icu.h2l.login.auth.online
+
+import icu.h2l.api.message.HyperZoneMessagePlaceholder
+import icu.h2l.api.message.HyperZoneMessageServiceProvider
+import icu.h2l.api.player.HyperZonePlayer
+import net.kyori.adventure.text.Component
+
+object MuaMessages {
+    private const val NAMESPACE = "auth-mua"
+
+    /**
+     * 返回"注册已被禁用"的原因文本，用于作为 [profileResolveFailed] 的 reason 参数。
+     */
+    fun registrationDisabledReason(player: HyperZonePlayer): String {
+        val service = HyperZoneMessageServiceProvider.getOrNull()
+        return service?.render(player, "$NAMESPACE.registration-disabled-reason")
+            ?.let { net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText().serialize(it) }
+            ?: "当前 MUA 渠道已被管理员禁止新玩家注册；若你已有档案，请使用 /bindcode use [绑定码]"
+    }
+
+    fun authInProgress(player: HyperZonePlayer): Component {
+        return render(player, "auth-in-progress", "正在进行 MUA 验证，请稍候…")
+    }
+
+    fun authSucceeded(player: HyperZonePlayer): Component {
+        return render(player, "auth-succeeded", "MUA 验证通过，正在准备档案与皮肤信息…")
+    }
+
+    fun profileResolveFailed(player: HyperZonePlayer, reason: String): Component {
+        return render(
+            player,
+            "profile-resolve-failed",
+            "$reason。若当前是建档名称冲突，请使用 /rename [新注册名]；若要绑定已有档案，请使用 /bindcode use [绑定码]。",
+            HyperZoneMessagePlaceholder.text("reason", reason)
+        )
+    }
+
+    fun verifyCompleteFailed(player: HyperZonePlayer, reason: String): Component {
+        return render(
+            player,
+            "verify-complete-failed",
+            "MUA 认证成功，但 Profile 绑定失败：$reason。若当前是建档名称冲突，请使用 /rename [新注册名]；若要绑定已有档案，请使用 /bindcode use [绑定码]。",
+            HyperZoneMessagePlaceholder.text("reason", reason)
+        )
+    }
+
+    private fun render(
+        player: HyperZonePlayer,
+        key: String,
+        fallback: String,
+        vararg placeholders: HyperZoneMessagePlaceholder
+    ): Component {
+        val service = HyperZoneMessageServiceProvider.getOrNull()
+        return service?.render(player, "$NAMESPACE.$key", *placeholders)
+            ?: Component.text(placeholders.fold(fallback) { acc, placeholder ->
+                val replacement = when (placeholder) {
+                    is HyperZoneMessagePlaceholder.Text -> placeholder.value
+                    is HyperZoneMessagePlaceholder.ComponentValue -> placeholder.value.toString()
+                }
+                acc.replace("<${placeholder.name}>", replacement)
+            })
+    }
+}
