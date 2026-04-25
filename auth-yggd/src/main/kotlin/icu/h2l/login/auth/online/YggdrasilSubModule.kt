@@ -35,13 +35,14 @@ class YggdrasilSubModule : HyperSubModule {
     lateinit var entryTableManager: EntryTableManager
     lateinit var yggdrasilAuthModule: YggdrasilAuthModule
 
-    override val credentialChannelIds: Set<String> = setOf("yggdrasil")
+    override val credentialChannelIds: Set<String> = setOf("yggdrasil", "mua")
 
     override fun register(api: HyperZoneApi) {
         val proxy = api.proxy
         val dataDirectory = api.dataDirectory
         val databaseManager: HyperZoneDatabaseManager = api.databaseManager
         HyperZoneModuleMessageResources.copyBundledLocales(dataDirectory, "auth-yggd", javaClass.classLoader)
+        HyperZoneModuleMessageResources.copyBundledLocales(dataDirectory, "auth-mua", javaClass.classLoader)
 
         val entryConfigManager = EntryConfigManager(dataDirectory, proxy)
         val entryTableManager = EntryTableManager(
@@ -66,6 +67,7 @@ class YggdrasilSubModule : HyperSubModule {
 
         proxy.eventManager.register(api, yggdrasilEventListener)
         proxy.eventManager.register(api, YggdrasilReUuidListener())
+        proxy.eventManager.register(api, MuaReUuidListener())
 
         this.entryConfigManager = entryConfigManager
         this.entryTableManager = entryTableManager
