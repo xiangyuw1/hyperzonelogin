@@ -41,6 +41,7 @@ import com.velocitypowered.proxy.protocol.packet.PluginMessagePacket
 import com.velocitypowered.proxy.protocol.packet.ServerLoginPacket
 import com.velocitypowered.proxy.protocol.packet.config.FinishedUpdatePacket
 import icu.h2l.login.HyperZoneLoginMain
+import icu.h2l.login.util.shouldForwardIdentifiedKey
 import io.netty.buffer.Unpooled
 import io.netty.channel.ChannelFutureListener
 import java.net.InetSocketAddress
@@ -206,10 +207,11 @@ class OutPreBackendBridge(
         connection.delayedWrite(handshake)
         connection.protocolVersion = protocolVersion
         connection.setActiveSessionHandler(StateRegistry.LOGIN)
-        if (player.identifiedKey == null && player.protocolVersion.noLessThan(ProtocolVersion.MINECRAFT_1_19_3)) {
+        val identifiedKey = player.identifiedKey?.takeIf { shouldForwardIdentifiedKey(it, player.gameProfile.id) }
+        if (identifiedKey == null && player.protocolVersion.noLessThan(ProtocolVersion.MINECRAFT_1_19_3)) {
             connection.delayedWrite(ServerLoginPacket(player.username, player.uniqueId))
         } else {
-            connection.delayedWrite(ServerLoginPacket(player.username, player.identifiedKey))
+            connection.delayedWrite(ServerLoginPacket(player.username, identifiedKey))
         }
         connection.flush()
     }

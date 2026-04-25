@@ -22,6 +22,7 @@
 package icu.h2l.login.auth.offline.listener
 
 import com.velocitypowered.api.event.Subscribe
+import icu.h2l.api.event.auth.MuaFallbackCoordinator
 import icu.h2l.api.event.vServer.VServerAuthStartEvent
 import icu.h2l.login.auth.offline.service.OfflineAuthService
 
@@ -30,10 +31,19 @@ class OfflineSessionAuthListener(
 ) {
     @Subscribe
     fun onAuthStart(event: VServerAuthStartEvent) {
-        if (event.proxyPlayer.isOnlineMode) {
+        val playerIp = event.proxyPlayer.remoteAddress.address.hostAddress.substringBefore('%')
+        val allowOfflineFallback = MuaFallbackCoordinator.isOfflineFallbackCandidate(
+            event.proxyPlayer.username,
+            event.hyperZonePlayer.clientOriginalUUID,
+            playerIp
+        )
+        if (event.proxyPlayer.isOnlineMode && !allowOfflineFallback) {
             return
         }
         if (!event.hyperZonePlayer.isInWaitingArea()) {
+            return
+        }
+        if (MuaFallbackCoordinator.shouldDeferOfflineFallback(event.proxyPlayer)) {
             return
         }
 

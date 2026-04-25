@@ -40,6 +40,7 @@ import icu.h2l.login.HyperZoneLoginMain
 import icu.h2l.login.manager.HyperZonePlayerManager
 import icu.h2l.login.player.ProfileSkinApplySupport
 import icu.h2l.login.util.hasSemanticGameProfileDifference
+import icu.h2l.login.util.shouldForwardIdentifiedKey
 import io.netty.buffer.ByteBuf
 import io.netty.channel.Channel
 import io.netty.channel.ChannelHandlerContext
@@ -103,12 +104,13 @@ class LoginProfilePacketReplacer(
         }
 
         val requestedForwardingVersion = resolveRequestedForwardingVersion(msg.content())
+        val forwardingProfile = resolveForwardingGameProfile()
         val forwardingData = PlayerDataForwarding.createForwardingData(
             config.forwardingSecret,
             getPlayerRemoteAddressAsString(),
             player.protocolVersion,
-            resolveForwardingGameProfile(),
-            player.identifiedKey,
+            forwardingProfile,
+            player.identifiedKey?.takeIf { shouldForwardIdentifiedKey(it, forwardingProfile.id) },
             requestedForwardingVersion,
         )
         return LoginPluginResponsePacket(msg.id, true, forwardingData)
@@ -164,10 +166,11 @@ class LoginProfilePacketReplacer(
             hyperPlayer.getAttachedGameProfile()
         }
 
-        return if (player.identifiedKey == null && player.protocolVersion.noLessThan(ProtocolVersion.MINECRAFT_1_19_3)) {
+        val identifiedKey = player.identifiedKey?.takeIf { shouldForwardIdentifiedKey(it, loginProfile.id) }
+        return if (identifiedKey == null && player.protocolVersion.noLessThan(ProtocolVersion.MINECRAFT_1_19_3)) {
             ServerLoginPacket(loginProfile.name, loginProfile.id)
         } else {
-            ServerLoginPacket(loginProfile.name, player.identifiedKey)
+            ServerLoginPacket(loginProfile.name, identifiedKey)
         }
     }
 

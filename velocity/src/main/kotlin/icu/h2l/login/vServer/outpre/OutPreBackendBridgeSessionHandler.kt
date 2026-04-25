@@ -34,6 +34,7 @@ import com.velocitypowered.proxy.protocol.packet.config.*
 import icu.h2l.api.log.HyperZoneDebugType
 import icu.h2l.login.manager.HyperChatCommandManagerImpl
 import icu.h2l.login.util.debug
+import icu.h2l.login.util.shouldForwardIdentifiedKey
 import io.netty.buffer.ByteBuf
 import io.netty.buffer.Unpooled
 import io.netty.util.ReferenceCountUtil
@@ -90,7 +91,7 @@ class OutPreBackendBridgeSessionHandler(
                 bridge.player.remoteAddress.address.hostAddress,
                 bridge.player.protocolVersion,
                 bridge.player.gameProfile,
-                bridge.player.identifiedKey,
+                bridge.player.identifiedKey?.takeIf { shouldForwardIdentifiedKey(it, bridge.player.gameProfile.id) },
                 requestedForwardingVersion,
             )
             connection.write(LoginPluginResponsePacket(packet.id, true, forwardingData))

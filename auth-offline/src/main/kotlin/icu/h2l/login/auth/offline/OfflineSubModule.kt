@@ -24,6 +24,7 @@ package icu.h2l.login.auth.offline
 import icu.h2l.api.HyperZoneApi
 import icu.h2l.api.db.HyperZoneDatabaseManager
 import icu.h2l.api.db.table.ProfileTable
+import icu.h2l.api.event.auth.MuaFallbackCoordinator
 import icu.h2l.api.log.info
 import icu.h2l.api.module.HyperSubModule
 import icu.h2l.api.profile.HyperZoneProfileServiceProvider
@@ -100,6 +101,7 @@ class OfflineSubModule : HyperSubModule {
         proxy.eventManager.register(api, OfflinePreLoginListener())
         proxy.eventManager.register(api, OfflineSessionAuthListener(offlineAuthService))
         proxy.eventManager.register(api, OfflineRenameReUuidListener())
+        MuaFallbackCoordinator.bindOfflineFallbackContinuation(offlineAuthService::continueAfterMuaFallback)
 
         OfflineAuthCommandRegistrar.registerAll(
             commandManager = api.chatCommandManager,

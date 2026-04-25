@@ -21,9 +21,12 @@
 
 package icu.h2l.login.auth.online
 
+import com.velocitypowered.api.event.PostOrder
 import com.velocitypowered.api.event.Subscribe
 import com.velocitypowered.api.event.connection.DisconnectEvent
+import icu.h2l.api.event.auth.MuaFallbackCoordinator
 import icu.h2l.api.event.connection.OpenStartAuthEvent
+import icu.h2l.api.event.vServer.VServerAuthStartEvent
 import icu.h2l.api.event.vServer.VServerJoinEvent
 import icu.h2l.api.log.HyperZoneDebugType
 import icu.h2l.api.log.debug
@@ -39,21 +42,28 @@ class YggdrasilEventListener(
 
     /** Pending MUA auth contexts for offline-UUID players. */
     private val muaPendingContexts = ConcurrentHashMap<Channel, PendingAuthContext>()
+    private val muaCandidateContexts = ConcurrentHashMap<Channel, PendingAuthContext>()
 
     @Subscribe
     fun onOnlineAuth(event: OpenStartAuthEvent) {
-        if (!event.isOnline) {
+        if (MuaFallbackCoordinator.isOfflineFallbackCandidate(event.userName, event.userUUID, event.playerIp)) {
             // Offline-UUID player: store a pending MUA context so we can attempt MUA
             // authentication when the player enters the waiting area.
-            muaPendingContexts[event.channel] = PendingAuthContext(
+            val pendingContext = PendingAuthContext(
                 username = event.userName,
                 uuid = event.userUUID,
                 serverId = event.serverId,
                 playerIp = event.playerIp
             )
+            muaPendingContexts[event.channel] = pendingContext
+            muaCandidateContexts[event.channel] = pendingContext
             debug(HyperZoneDebugType.YGGDRASIL_AUTH) {
                 "[MuaFlow] OpenStartAuthEvent(offline) 收到，等待等待区进入事件触发 MUA 验证: addr=${event.channel}, user=${event.userName}"
             }
+            return
+        }
+
+        if (!event.isOnline) {
             return
         }
 
@@ -66,6 +76,27 @@ class YggdrasilEventListener(
         debug(HyperZoneDebugType.YGGDRASIL_AUTH) {
             "[YggdrasilFlow] OnlineAuthEvent 收到，等待等待区进入事件触发验证: addr=${event.channel}, user=${event.userName}"
         }
+    }
+
+    @Subscribe(order = PostOrder.EARLY)
+    fun onWaitingAreaAuthStart(event: VServerAuthStartEvent) {
+        if (!event.hyperZonePlayer.isInWaitingArea()) {
+            return
+        }
+
+        val channel = event.proxyPlayer.getChannel()
+        val pending = muaPendingContexts.remove(channel) ?: return
+        val username = event.proxyPlayer.username
+
+        debug(HyperZoneDebugType.YGGDRASIL_AUTH) { "[MuaFlow] AuthStart 收到，优先开始 MUA 验证: user=$username" }
+        yggdrasilAuthModule.startMuaAuth(
+            player = event.proxyPlayer,
+            username = pending.username,
+            uuid = pending.uuid,
+            serverId = pending.serverId,
+            playerIp = pending.playerIp
+        )
+        yggdrasilAuthModule.registerMuaWaitingAreaPlayer(event.proxyPlayer, event.hyperZonePlayer)
     }
 
     @Subscribe
@@ -92,22 +123,7 @@ class YggdrasilEventListener(
             )
             yggdrasilAuthModule.registerWaitingAreaPlayer(event.proxyPlayer, event.hyperZonePlayer)
         } else {
-            // ── MUA flow for offline-UUID players ────────────────────────────────
             if (!event.hyperZonePlayer.isInWaitingArea()) return
-
-            val channel = event.proxyPlayer.getChannel()
-            val pending = muaPendingContexts.remove(channel) ?: return
-
-            val username = event.proxyPlayer.username
-            debug(HyperZoneDebugType.YGGDRASIL_AUTH) { "[MuaFlow] WaitingAreaJoin 收到，开始 MUA 验证: user=$username" }
-            yggdrasilAuthModule.startMuaAuth(
-                player = event.proxyPlayer,
-                username = pending.username,
-                uuid = pending.uuid,
-                serverId = pending.serverId,
-                playerIp = pending.playerIp
-            )
-            yggdrasilAuthModule.registerMuaWaitingAreaPlayer(event.proxyPlayer, event.hyperZonePlayer)
         }
     }
 
@@ -116,6 +132,14 @@ class YggdrasilEventListener(
         val channel = event.player.getChannel()
         pendingContexts.remove(channel)
         muaPendingContexts.remove(channel)
+        val candidateContext = muaCandidateContexts.remove(channel)
+        if (candidateContext != null) {
+            MuaFallbackCoordinator.clearOfflineFallbackCandidate(
+                candidateContext.username,
+                candidateContext.uuid,
+                candidateContext.playerIp.orEmpty()
+            )
+        }
         yggdrasilAuthModule.clearPlayerCacheOnDisconnect(event.player)
         yggdrasilAuthModule.clearMuaPlayerCacheOnDisconnect(event.player)
     }

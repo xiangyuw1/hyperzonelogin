@@ -28,6 +28,7 @@ import com.google.gson.Gson
 import icu.h2l.login.auth.online.gson.VelocityGson
 import icu.h2l.api.db.HyperZoneDatabaseManager
 import icu.h2l.api.event.auth.AuthenticationFailureEvent
+import icu.h2l.api.event.auth.MuaFallbackCoordinator
 import icu.h2l.api.event.profile.ProfileSkinPreprocessEvent
 import icu.h2l.api.log.HyperZoneDebugType
 import icu.h2l.api.log.debug
@@ -523,6 +524,28 @@ class YggdrasilAuthModule(
         debug(HyperZoneDebugType.YGGDRASIL_AUTH) { "[MuaFlow] 玩家断连，已清理 MUA 缓存状态: user=${player.username}" }
     }
 
+    fun shouldDeferOfflineFallback(player: Player): Boolean {
+        if (entryConfigManager.getConfigById(MuaHyperZoneCredential.CHANNEL_ID) == null) {
+            return false
+        }
+
+        if (muaWaitingAreaPlayers.containsKey(player) || muaAuthResults.containsKey(player)) {
+            return true
+        }
+
+        val runningJob = muaInFlightAuthJobs[player]
+        return runningJob?.isActive == true
+    }
+
+    fun shouldRequestMuaSessionAuth(username: String, uuid: UUID): Boolean {
+        if (entryConfigManager.getConfigById(MuaHyperZoneCredential.CHANNEL_ID) == null) {
+            return false
+        }
+
+        return findCandidateEntriesByClientIdentity(username, uuid)
+            .any { it.equals(MuaHyperZoneCredential.CHANNEL_ID, ignoreCase = true) }
+    }
+
     // ── MUA private helpers ────────────────────────────────────────────────────
 
     private fun dispatchMuaAuthResult(
@@ -542,6 +565,7 @@ class YggdrasilAuthModule(
 
                 info { "玩家 $username 通过 MUA 验证" }
                 handler.sendMessage(MuaMessages.authSucceeded(handler))
+                fireProfileSkinPreprocessEvent(handler, result)
                 if (handler.isInWaitingArea()) {
                     runCatching {
                         handler.overVerify()
@@ -563,6 +587,7 @@ class YggdrasilAuthModule(
             }
             info { "玩家 $username MUA 验证失败（将回退至离线认证）: $failureReason" }
             debug(HyperZoneDebugType.YGGDRASIL_AUTH) { "[MuaFlow] MUA 验证失败原因: $failureReason" }
+            MuaFallbackCoordinator.continueOfflineFallback(player)
         } finally {
             clearMuaTransientState(player)
         }

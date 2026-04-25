@@ -23,6 +23,7 @@ package icu.h2l.login.auth.online
 
 import icu.h2l.api.HyperZoneApi
 import icu.h2l.api.db.HyperZoneDatabaseManager
+import icu.h2l.api.event.auth.MuaFallbackCoordinator
 import icu.h2l.api.db.table.ProfileTable
 import icu.h2l.api.message.HyperZoneModuleMessageResources
 import icu.h2l.api.module.HyperSubModule
@@ -68,6 +69,11 @@ class YggdrasilSubModule : HyperSubModule {
         proxy.eventManager.register(api, yggdrasilEventListener)
         proxy.eventManager.register(api, YggdrasilReUuidListener())
         proxy.eventManager.register(api, MuaReUuidListener())
+        MuaFallbackCoordinator.bindDeferOfflineHandler(yggdrasilAuthModule::shouldDeferOfflineFallback)
+        MuaFallbackCoordinator.bindMuaAvailabilityHandler {
+            entryConfigManager.getConfigById(MuaHyperZoneCredential.CHANNEL_ID) != null
+        }
+        MuaFallbackCoordinator.bindMuaSessionAuthHandler(yggdrasilAuthModule::shouldRequestMuaSessionAuth)
 
         this.entryConfigManager = entryConfigManager
         this.entryTableManager = entryTableManager

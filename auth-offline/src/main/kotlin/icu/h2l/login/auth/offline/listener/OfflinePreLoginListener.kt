@@ -24,6 +24,7 @@ package icu.h2l.login.auth.offline.listener
 // HyperZonePlayerManager.create(...) belongs to core pre-login initialization and is intentionally
 // kept in the core `velocity` EventListener. Do not initialize channel here to avoid ordering issues.
 import com.velocitypowered.api.event.Subscribe
+import icu.h2l.api.event.auth.MuaFallbackCoordinator
 import icu.h2l.api.event.connection.OpenPreLoginEvent
 import icu.h2l.api.log.info
 import icu.h2l.login.auth.offline.config.AuthOfflineConfigLoader
@@ -46,6 +47,14 @@ class OfflinePreLoginListener {
             info { "匹配到离线 host 玩家: $name" }
         }
         val offlineUUIDType = ExtraUuidUtils.matchType(uuid, name)
+        val shouldTryMuaFirst =
+            offlineUUIDType != OfflineUUIDType.UNKNOWN &&
+                !offlineHost &&
+                MuaFallbackCoordinator.hasMuaProvider()
+
+        if (shouldTryMuaFirst) {
+            MuaFallbackCoordinator.markOfflineFallbackCandidate(name, uuid, event.playerIp)
+        }
 
         event.isOnline = !(offlineUUIDType != OfflineUUIDType.UNKNOWN || offlineHost)
         info { "传入 UUID 信息玩家: $name UUID:$uuid 类型: $offlineUUIDType 在线:${event.isOnline}" }

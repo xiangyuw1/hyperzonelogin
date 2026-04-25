@@ -657,6 +657,21 @@ class OfflineAuthService(
         return SessionCheckResult(true, OfflineAuthMessages.SESSION_AUTO_LOGIN)
     }
 
+    fun continueAfterMuaFallback(player: Player) {
+        val hyperPlayer = playerAccessor.getByPlayer(player)
+        if (!hyperPlayer.isInWaitingArea()) {
+            return
+        }
+
+        val autoLoginResult = tryAutoLogin(player)
+        autoLoginResult?.message?.let(hyperPlayer::sendMessage)
+        if (autoLoginResult?.passed == true) {
+            return
+        }
+
+        getJoinPrompts(player).forEach(hyperPlayer::sendMessage)
+    }
+
     private fun verifyPassword(password: String, entry: OfflineAuthEntry): Boolean {
         return when (entry.hashFormat.lowercase()) {
             HASH_FORMAT_PLAIN -> password == entry.passwordHash

@@ -37,6 +37,7 @@ import com.velocitypowered.proxy.protocol.netty.MinecraftDecoder
 import com.velocitypowered.proxy.protocol.packet.EncryptionRequestPacket
 import com.velocitypowered.proxy.protocol.packet.EncryptionResponsePacket
 import com.velocitypowered.proxy.protocol.packet.ServerLoginPacket
+import icu.h2l.api.event.auth.MuaFallbackCoordinator
 import icu.h2l.api.event.connection.OpenPreLoginEvent
 import icu.h2l.api.event.connection.OpenStartAuthEvent
 import icu.h2l.api.log.HyperZoneDebugType
@@ -205,8 +206,15 @@ class NettyLoginSessionHandler(
                         val resolvedOnlineMode = openPreLoginEvent.isOnline
                             && !result.isForceOfflineMode
                             && (injector.proxy.configuration.isOnlineMode || result.isOnlineModeAllowed)
+                        val isOfflineFallbackCandidate = MuaFallbackCoordinator.isOfflineFallbackCandidate(
+                            userName,
+                            holderUuid,
+                            playerIp
+                        )
+                        val shouldAuthenticateMuaCandidate = isOfflineFallbackCandidate &&
+                            MuaFallbackCoordinator.shouldRequestMuaSessionAuth(userName, holderUuid)
                         debug(HyperZoneDebugType.OUTPRE_TRACE) {
-                            "netty.handleServerLogin after-OpenPreLogin channel=${mcConnection.channel} username=$userName allow=${openPreLoginEvent.allow} requestedOnline=${openPreLoginEvent.isOnline} resolvedOnline=$resolvedOnlineMode forceOffline=${result.isForceOfflineMode} onlineAllowed=${result.isOnlineModeAllowed} host=$host playerIp=$playerIp"
+                            "netty.handleServerLogin after-OpenPreLogin channel=${mcConnection.channel} username=$userName allow=${openPreLoginEvent.allow} requestedOnline=${openPreLoginEvent.isOnline} resolvedOnline=$resolvedOnlineMode offlineFallbackCandidate=$isOfflineFallbackCandidate shouldAuthenticateMua=$shouldAuthenticateMuaCandidate forceOffline=${result.isForceOfflineMode} onlineAllowed=${result.isOnlineModeAllowed} host=$host playerIp=$playerIp"
                         }
                         if (!openPreLoginEvent.allow) {
                             inbound.disconnect(openPreLoginEvent.disconnectMessage)
@@ -215,13 +223,14 @@ class NettyLoginSessionHandler(
                         onlineMode = resolvedOnlineMode
                         if (mcConnection.protocolVersion.noLessThan(ProtocolVersion.MINECRAFT_1_20_5)) {
 //                            高版本离线也可以加密
-                            val request: EncryptionRequestPacket = generateEncryptionRequest(onlineMode)
+                            val request: EncryptionRequestPacket =
+                                generateEncryptionRequest(onlineMode || shouldAuthenticateMuaCandidate)
                             this.verify = request.verifyToken.copyOf(4)
                             mcConnection.write(request)
                             cState = 2
                         } else {
 //                            太低的版本不能发加密包，不然会退出
-                            if (onlineMode) {
+                            if (onlineMode || shouldAuthenticateMuaCandidate) {
                                 //低版本不用管shoudAuthenticate，没有这个参数
                                 val request: EncryptionRequestPacket = generateEncryptionRequest(true)
                                 this.verify = request.verifyToken.copyOf(4)
