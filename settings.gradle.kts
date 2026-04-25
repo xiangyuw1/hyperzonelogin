@@ -21,8 +21,6 @@
 
 pluginManagement {
     repositories {
-        maven("https://maven.aliyun.com/repository/central")
-        maven("https://mirrors.cloud.tencent.com/nexus/repository/maven-public/")
         maven("https://plugins.gradle.org/m2/")
         gradlePluginPortal()
         mavenCentral()
