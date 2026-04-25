@@ -37,25 +37,9 @@ class YggdrasilEventListener(
 ) {
     private val pendingContexts = ConcurrentHashMap<Channel, PendingAuthContext>()
 
-    /** Pending MUA auth contexts for offline-UUID players. */
-    private val muaPendingContexts = ConcurrentHashMap<Channel, PendingAuthContext>()
-
     @Subscribe
     fun onOnlineAuth(event: OpenStartAuthEvent) {
-        if (!event.isOnline) {
-            // Offline-UUID player: store a pending MUA context so we can attempt MUA
-            // authentication when the player enters the waiting area.
-            muaPendingContexts[event.channel] = PendingAuthContext(
-                username = event.userName,
-                uuid = event.userUUID,
-                serverId = event.serverId,
-                playerIp = event.playerIp
-            )
-            debug(HyperZoneDebugType.YGGDRASIL_AUTH) {
-                "[MuaFlow] OpenStartAuthEvent(offline) 收到，等待等待区进入事件触发 MUA 验证: addr=${event.channel}, user=${event.userName}"
-            }
-            return
-        }
+        if (!event.isOnline) return
 
         pendingContexts[event.channel] = PendingAuthContext(
             username = event.userName,
@@ -70,54 +54,32 @@ class YggdrasilEventListener(
 
     @Subscribe
     fun onWaitingAreaJoin(event: VServerJoinEvent) {
-        if (event.proxyPlayer.isOnlineMode) {
-            // ── Standard Yggdrasil flow ──────────────────────────────────────────
-            if (!event.hyperZonePlayer.isInWaitingArea()) return
+        if (!event.proxyPlayer.isOnlineMode) return
+        if (!event.hyperZonePlayer.isInWaitingArea()) return
 
-            val channel = event.proxyPlayer.getChannel()
-            val pending = pendingContexts.remove(channel)
-            if (pending == null) {
-                debug(HyperZoneDebugType.YGGDRASIL_AUTH) { "[YggdrasilFlow] WaitingAreaJoin 未找到待验证上下文，跳过: addr=$channel" }
-                return
-            }
-
-            val username = event.proxyPlayer.username
-            debug(HyperZoneDebugType.YGGDRASIL_AUTH) { "[YggdrasilFlow] WaitingAreaJoin 收到，开始验证: user=$username" }
-            yggdrasilAuthModule.startYggdrasilAuth(
-                player = event.proxyPlayer,
-                username = pending.username,
-                uuid = pending.uuid,
-                serverId = pending.serverId,
-                playerIp = pending.playerIp
-            )
-            yggdrasilAuthModule.registerWaitingAreaPlayer(event.proxyPlayer, event.hyperZonePlayer)
-        } else {
-            // ── MUA flow for offline-UUID players ────────────────────────────────
-            if (!event.hyperZonePlayer.isInWaitingArea()) return
-
-            val channel = event.proxyPlayer.getChannel()
-            val pending = muaPendingContexts.remove(channel) ?: return
-
-            val username = event.proxyPlayer.username
-            debug(HyperZoneDebugType.YGGDRASIL_AUTH) { "[MuaFlow] WaitingAreaJoin 收到，开始 MUA 验证: user=$username" }
-            yggdrasilAuthModule.startMuaAuth(
-                player = event.proxyPlayer,
-                username = pending.username,
-                uuid = pending.uuid,
-                serverId = pending.serverId,
-                playerIp = pending.playerIp
-            )
-            yggdrasilAuthModule.registerMuaWaitingAreaPlayer(event.proxyPlayer, event.hyperZonePlayer)
+        val channel = event.proxyPlayer.getChannel()
+        val pending = pendingContexts.remove(channel)
+        if (pending == null) {
+            debug(HyperZoneDebugType.YGGDRASIL_AUTH) { "[YggdrasilFlow] WaitingAreaJoin 未找到待验证上下文，跳过: addr=$channel" }
+            return
         }
+
+        val username = event.proxyPlayer.username
+        debug(HyperZoneDebugType.YGGDRASIL_AUTH) { "[YggdrasilFlow] WaitingAreaJoin 收到，开始验证: user=$username" }
+        yggdrasilAuthModule.startYggdrasilAuth(
+            player = event.proxyPlayer,
+            username = pending.username,
+            uuid = pending.uuid,
+            serverId = pending.serverId,
+            playerIp = pending.playerIp
+        )
+        yggdrasilAuthModule.registerWaitingAreaPlayer(event.proxyPlayer, event.hyperZonePlayer)
     }
 
     @Subscribe
     fun onDisconnect(event: DisconnectEvent) {
-        val channel = event.player.getChannel()
-        pendingContexts.remove(channel)
-        muaPendingContexts.remove(channel)
+        pendingContexts.remove(event.player.getChannel())
         yggdrasilAuthModule.clearPlayerCacheOnDisconnect(event.player)
-        yggdrasilAuthModule.clearMuaPlayerCacheOnDisconnect(event.player)
     }
 }
 
