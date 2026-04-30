@@ -60,6 +60,7 @@ import icu.h2l.login.profile.ProfileBindingCodeService
 import icu.h2l.login.profile.VelocityHyperZoneProfileService
 import icu.h2l.login.util.registerApiLogger
 import icu.h2l.login.vServer.backend.BackendAuthHoldListener
+import icu.h2l.login.vServer.backend.compat.BackendLoginProfileReplaceListener
 import icu.h2l.login.vServer.backend.compat.BackendProfileLayerCompatListener
 import icu.h2l.login.vServer.backend.compat.BackendRuntimeProfileCompensator
 import icu.h2l.login.vServer.command.ExitVServerCommand
@@ -218,8 +219,10 @@ class HyperZoneLoginMain(
         proxy.commandManager.register(hzlCommandMeta, hzlCommand)
         if (activeVServerAdapter?.needsBackendInitialProfileCompat() == true) {
             proxy.eventManager.register(plugin, BackendProfileLayerCompatListener())
+            proxy.eventManager.register(plugin, BackendLoginProfileReplaceListener())
         }
         proxy.eventManager.register(plugin, AttachedProfileInitialGameProfileListener())
+        proxy.eventManager.register(plugin, LoginProfileReplaceDefaultListener())
         proxy.eventManager.register(plugin, backendRuntimeProfileCompensator)
         proxy.eventManager.register(plugin, LoginRenameListener())
         proxy.eventManager.register(plugin, LoginReUuidListener())

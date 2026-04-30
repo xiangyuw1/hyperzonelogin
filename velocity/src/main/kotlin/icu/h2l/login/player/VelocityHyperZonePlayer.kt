@@ -98,6 +98,14 @@ class VelocityHyperZonePlayer(
     private val temporaryGameProfile: GameProfile = RemapUtils.randomProfile()
 
     /**
+     * 当前会话通过认证的凭证渠道 ID；submitCredential 时自动记录，resetVerify 时清空。
+     */
+    private val authChannelIdRef = AtomicReference<String?>(null)
+
+    override val authChannelId: String?
+        get() = authChannelIdRef.get()
+
+    /**
      * 绑定当前登录会话对应的代理层 Player。
      *
      * 注意：每个 `VelocityHyperZonePlayer` 只允许绑定一次。
@@ -137,6 +145,7 @@ class VelocityHyperZonePlayer(
                     "必须先调用 destroyCredential() 移除旧凭证后再提交新凭证"
             )
         }
+        authChannelIdRef.set(credential.channelId)
         submittedCredentials += credential
     }
 
@@ -190,6 +199,7 @@ class VelocityHyperZonePlayer(
         isVerifiedState.set(false)
         hasNotifiedReadyState.set(false)
         submittedCredentials.clear()
+        authChannelIdRef.set(null)
         lastReadyConflictPlayerIds.set(emptySet())
     }
 
@@ -218,6 +228,10 @@ class VelocityHyperZonePlayer(
             resolvedProfile.name,
             emptyList()
         )
+    }
+
+    override fun getApplyGameProfile(): GameProfile? {
+        return ProfileSkinApplySupport.apply(this)
     }
 
     internal fun onAttachedProfileAvailable() {

@@ -32,13 +32,14 @@ import com.velocitypowered.proxy.connection.PlayerDataForwarding
 import com.velocitypowered.proxy.protocol.ProtocolUtils
 import com.velocitypowered.proxy.protocol.packet.LoginPluginResponsePacket
 import com.velocitypowered.proxy.protocol.packet.ServerLoginPacket
+import icu.h2l.api.event.profile.LoginProfileReplaceEvent
 import icu.h2l.api.log.HyperZoneDebugType
 import icu.h2l.api.log.debug
 import icu.h2l.api.log.error
+import icu.h2l.api.log.info
 import icu.h2l.api.player.HyperZonePlayer
 import icu.h2l.login.HyperZoneLoginMain
 import icu.h2l.login.manager.HyperZonePlayerManager
-import icu.h2l.login.player.ProfileSkinApplySupport
 import icu.h2l.login.util.hasSemanticGameProfileDifference
 import io.netty.buffer.ByteBuf
 import io.netty.channel.Channel
@@ -51,15 +52,12 @@ internal fun shouldRewriteLoginProfile(currentProfile: GameProfile, expectedProf
 }
 
 /**
- * 重写发往后端的登录档案包。
+ * 重写发往后端的登录档案包（事件驱动版）。
  *
- * 这里虽然挂在 backend 连接注入点上，但“Velocity 当前持有的玩家档案不再可信”
- * 并不一定只由 backend 等待区兼容本身造成；像 Floodgate 这类额外渠道/插件，
- * 也可能让 VC 内部看到的 Profile 与 HZL 自身维护的可信档案发生偏离。
- *
- * 因此本处理器会先检查 VC 当前玩家档案是否已经与 HZL 预期档案一致：
- * - 若一致，说明当前链路无需补丁，立刻自移除；
- * - 若不一致，再继续拦截并改写登录阶段下发给后端的档案包。
+ * 在首次 write 时触发 [LoginProfileReplaceEvent]，初始档案由
+ * [resolveInitialForwardingProfile] 解析；监听器可修改事件中的档案并将 modified 置为 true。
+ * - modified = false：说明无需补丁，立刻自移除；
+ * - modified = true：使用事件中的档案替换登录阶段下发给后端的档案包，并输出替换成功日志。
  */
 class LoginProfilePacketReplacer(
     private val channel: Channel
@@ -72,6 +70,9 @@ class LoginProfilePacketReplacer(
     private lateinit var hyperPlayer: HyperZonePlayer
     private lateinit var targetServerName: String
     private lateinit var config: VelocityConfiguration
+
+    /** 由事件监听器确认后的最终替换档案；仅在 initFields 成功（modified=true）后有效。 */
+    private lateinit var replacedProfile: GameProfile
 
     private fun replaceMessage(msg: Any?): Any? {
         return when (msg) {
@@ -88,14 +89,6 @@ class LoginProfilePacketReplacer(
         channel.pipeline().remove(this)
     }
 
-    private fun isLoginServerTarget(): Boolean {
-        val loginServerName = HyperZoneLoginMain.getCoreConfig().vServer.backend.fallbackAuthServer.trim()
-        if (loginServerName.isBlank()) {
-            return false
-        }
-
-        return targetServerName.equals(loginServerName, ignoreCase = true)
-    }
 
     private fun genLoginPluginResponse(msg: LoginPluginResponsePacket): LoginPluginResponsePacket {
         if (config.playerInfoForwardingMode != PlayerInfoForwarding.MODERN) {
@@ -107,7 +100,7 @@ class LoginProfilePacketReplacer(
             config.forwardingSecret,
             getPlayerRemoteAddressAsString(),
             player.protocolVersion,
-            resolveForwardingGameProfile(),
+            replacedProfile,
             player.identifiedKey,
             requestedForwardingVersion,
         )
@@ -141,33 +134,32 @@ class LoginProfilePacketReplacer(
         }.getOrDefault(PlayerDataForwarding.MODERN_DEFAULT)
     }
 
-    fun resolveForwardingGameProfile(): GameProfile {
-        if (isLoginServerTarget() || hyperPlayer.isInWaitingArea()) {
-            return hyperPlayer.getTemporaryGameProfile()
-        }
-
-        return requireNotNull(ProfileSkinApplySupport.apply(hyperPlayer)) {
-            "Formal profile is unavailable while resolving forwarding game profile for clientOriginal=${hyperPlayer.clientOriginalName}"
-        }
-    }
-
-    fun getPlayerRemoteAddressAsString(): String {
+    private fun getPlayerRemoteAddressAsString(): String {
         val addr = player.remoteAddress.address.hostAddress
         val ipv6ScopeIdx = addr.indexOf('%')
         return if (ipv6ScopeIdx == -1) addr else addr.substring(0, ipv6ScopeIdx)
     }
 
     private fun genServerLogin(): ServerLoginPacket {
-        val loginProfile = if (isLoginServerTarget() || hyperPlayer.isInWaitingArea()) {
-            hyperPlayer.getTemporaryGameProfile()
-        } else {
-            hyperPlayer.getAttachedGameProfile()
-        }
-
         return if (player.identifiedKey == null && player.protocolVersion.noLessThan(ProtocolVersion.MINECRAFT_1_19_3)) {
-            ServerLoginPacket(loginProfile.name, loginProfile.id)
+            ServerLoginPacket(replacedProfile.name, replacedProfile.id)
         } else {
-            ServerLoginPacket(loginProfile.name, player.identifiedKey)
+            ServerLoginPacket(replacedProfile.name, player.identifiedKey)
+        }
+    }
+
+    /**
+     * 计算本次连接应向后端转发的初始档案（供事件的 initialProfile 字段使用）。
+     *
+     * 仅根据玩家是否处于等待区来决定使用临时档案还是正式档案；
+     * 登录服（isLoginServerTarget）的临时档案替换由 backend 模块的专用监听器负责。
+     */
+    private fun resolveInitialForwardingProfile(): GameProfile {
+        if (hyperPlayer.isInWaitingArea()) {
+            return hyperPlayer.getTemporaryGameProfile()
+        }
+        return requireNotNull(hyperPlayer.getApplyGameProfile()) {
+            "Formal profile is unavailable while resolving initial forwarding profile for clientOriginal=${hyperPlayer.clientOriginalName}"
         }
     }
 
@@ -202,23 +194,20 @@ class LoginProfilePacketReplacer(
         targetServerName = association.server.serverInfo.name
         hyperPlayer = HyperZonePlayerManager.getByPlayer(player)
         config = HyperZoneLoginMain.getInstance().proxy.configuration as VelocityConfiguration
-        if (!shouldRewriteLoginProfile(player.gameProfile, resolveExpectedVelocityGameProfile())) {
+
+        val initialProfile = resolveInitialForwardingProfile()
+        val event = LoginProfileReplaceEvent(hyperPlayer, targetServerName, initialProfile)
+        HyperZoneLoginMain.getInstance().proxy.eventManager.fire(event).join()
+
+        if (!event.modified) {
             retire()
             return null
         }
+
+        replacedProfile = event.profile
+        info {
+            "[LoginProfileReplace] 替换成功: server=$targetServerName name=${replacedProfile.name} uuid=${replacedProfile.id}"
+        }
         return Unit
     }
-
-    private fun resolveExpectedVelocityGameProfile(): GameProfile {
-        if (isLoginServerTarget() || hyperPlayer.isInWaitingArea()) {
-            return hyperPlayer.getTemporaryGameProfile()
-        }
-
-        return requireNotNull(ProfileSkinApplySupport.apply(hyperPlayer)) {
-            "Formal profile is unavailable while resolving expected velocity game profile for clientOriginal=${hyperPlayer.clientOriginalName}"
-        }
-    }
 }
-
-
-
