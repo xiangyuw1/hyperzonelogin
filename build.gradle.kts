@@ -213,14 +213,11 @@ subprojects {
     }
 
     repositories {
-<<<<<<< HEAD
-=======
         val isCi = System.getenv("CI") == "true"
         if (!isCi) {
             maven("https://maven.aliyun.com/repository/central")
             maven("https://mirrors.cloud.tencent.com/nexus/repository/maven-public/")
         }
->>>>>>> upstream/master
         mavenCentral()
 
         maven("https://repo.papermc.io/repository/maven-public/")
